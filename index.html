@@ -47,6 +47,8 @@ button{font-family:inherit;color:inherit;border:0;background:none;cursor:pointer
 .tag .rk.A{color:var(--shu);border-color:var(--shu)}
 .tag .rk.B{color:var(--ao);border-color:var(--ao)}
 .tag .st{color:var(--hold)}
+
+.tag .again{background:var(--hold);color:var(--paper);border-radius:3px;padding:1px 5px;font-weight:600}
 .tag .hot{background:var(--shu);color:var(--paper);border-radius:3px;padding:1px 5px;font-weight:600}
 .q{font-family:var(--mincho);font-size:17.5px;line-height:1.92;letter-spacing:.01em;
    text-align:justify;word-break:normal;line-break:strict;overflow-wrap:anywhere}
@@ -111,6 +113,13 @@ button{font-family:inherit;color:inherit;border:0;background:none;cursor:pointer
 .back b{color:var(--ink);font-weight:600}
 .gl{padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.7}
 .gl b{display:block;font-weight:600;font-size:13.5px;margin-bottom:2px}
+.caution{margin-top:10px;padding:10px 12px;border-left:3px solid var(--hold);
+  background:var(--card);font-size:11.5px;line-height:1.7;color:var(--sub);border-radius:0 8px 8px 0}
+.caution b{color:var(--ink);font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.chips button{border:1px solid var(--line);background:var(--card);border-radius:20px;
+  padding:6px 12px;font-size:11.5px;color:var(--sub)}
+.chips button.on{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:600}
 .nav{display:flex;gap:16px;padding:16px 0 0;font-size:12.5px;color:var(--sub)}
 .nav button.on{color:var(--ink);font-weight:600}
 .big{font-size:34px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
@@ -226,15 +235,19 @@ function lprobe(){
 
 /* ---------- 状態 ---------- */
 var S=null, ses=null, view='home', tmp={};
-var STEPS=[0,1,3,7,14];
-var STEPNM=['当日','翌日','3日後','1週間','2週間'];
+var STEPS=[1,3,7,14];
+var STEPNM=['翌日','3日後','1週間','2週間'];
 function today(){ var d=new Date(); d.setHours(0,0,0,0); return Math.floor(d.getTime()/864e5); }
-function fresh(){ return {L:{},log:{},rank:'A',mix:'freq',lv:'e',ver:3}; }
+function fresh(){ return {L:{},log:{},rank:'A',mix:'freq',lv:'e',rt:'on',ses:null,ver:4}; }
 S=fresh();
 
 function load(){ return Store.get(KEY).then(function(v){
     try{ S=v?JSON.parse(v):fresh(); }catch(e){ S=fresh(); }
-    if(!S.L)S=fresh(); if(!S.rank)S.rank='A'; if(!S.log)S.log={}; if(!S.mix)S.mix='freq'; if(!S.lv)S.lv='e';
+    if(!S.L)S=fresh(); if(!S.rank)S.rank='A'; if(!S.log)S.log={}; if(!S.mix)S.mix='freq'; if(!S.lv)S.lv='e'; if(!S.rt)S.rt='on';
+    if(!S.ver||S.ver<4){                       /* 旧データの段を1つ繰り上げる */
+      for(var k in S.L){ var L=S.L[k]; L.st=Math.max(0, Math.min((L.st||0)-1, STEPS.length-1)); }
+      S.ver=4;
+    }
   }); }
 var saveT=null;
 function save(){ clearTimeout(saveT); saveT=setTimeout(function(){ Store.set(KEY,JSON.stringify(S)); },220); }
@@ -289,17 +302,42 @@ var MODES={
 };
 function startSession(mode,topic){
   var M=MODES[mode]||MODES.r15;
-  var d=dueList();
+  var done={}; var z=S.ses;
+  if(z && z.day===today()) for(var k=0;k<z.i;k++) done[z.q[k]]=1;   /* 今日すでに解いた肢は出さない */
+  var d=dueList().filter(function(c){ return !done[c.i]; });
   if(topic) d=d.filter(function(c){return c.t===topic;});
   d.sort(function(a,b){ return (S.L[a.i].due-S.L[b.i].due)||(S.L[b.i].miss||0)-(S.L[a.i].miss||0); });
   var q=d.slice(0,M.rev);
-  if(M.neu>0){ var np=newPool();
+  if(M.neu>0){ var np=newPool().filter(function(c){ return !done[c.i]; });
     if(topic) np=np.filter(function(c){return c.t===topic;});
     q=q.concat(topic?weightedPick(np,M.neu):weightedPick(np,M.neu)); }
   if(!q.length){ toast('出す問題がありません'); return; }
-  ses={mode:mode,topic:topic||null,queue:q,i:0,done:0,ok:0,ng:0,miss:[],shown:false,pick:null,graded:false,sh:false,startAt:Date.now(),tick:Date.now(),sec:0};
+  ses={mode:mode,topic:topic||null,queue:q,i:0,done:0,ok:0,ng:0,miss:[],rq:[],rstart:undefined,
+       pick:null,graded:false,sh:false,shi:0,startAt:Date.now(),tick:Date.now(),sec:0};
+  saveSes(); view='card'; render();
+}
+function saveSes(){
+  if(!ses) S.ses=null;
+  else S.ses={m:ses.mode, tp:ses.topic, q:ses.queue.map(function(c){return c.i;}),
+              i:ses.i, ok:ses.ok, ng:ses.ng, miss:ses.miss, sec:ses.sec||0,
+              rq:ses.rq||[], rs:ses.rstart, day:today()};
+  save();
+}
+function resumable(){
+  var z=S.ses;
+  return (z && z.day===today() && z.q && z.i<z.q.length) ? z : null;
+}
+function resumeSession(){
+  var z=resumable();
+  if(!z){ toast('続きがありません'); return; }
+  var q=[]; for(var i=0;i<z.q.length;i++){ if(BYID[z.q[i]]) q.push(BYID[z.q[i]]); }
+  if(z.i>=q.length){ S.ses=null; save(); toast('続きがありません'); return; }
+  ses={mode:z.m, topic:z.tp, queue:q, i:z.i, done:z.i, ok:z.ok, ng:z.ng, miss:z.miss||[],
+       rq:z.rq||[], rstart:z.rs, pick:null, graded:false, sh:false, shi:0,
+       startAt:Date.now(), tick:Date.now(), sec:z.sec||0};
   view='card'; render();
 }
+function isRetry(){ return ses && ses.rstart!==undefined && ses.i>=ses.rstart; }
 function grade(id,good){
   var t=today(), L=S.L[id]||{st:-1,miss:0,sh:0,nw:1};
   if(L.st===undefined)L.st=-1;
@@ -322,25 +360,39 @@ function tick(){
 function answer(pick){
   if(ses.graded) return;
   tick();
-  var c=BYID[ses.queue[ses.i].i];
-  ses.pick=pick; ses.graded=true; ses.shown=true;
-  var good = (pick===c.a);
-  if(pick===2) good=false;
-  if(good) ses.ok++; else { ses.ng++; if(ses.miss.indexOf(c.i)<0) ses.miss.push(c.i); }
-  grade(c.i,good);
-  render();
+  var c=ses.queue[ses.i];
+  ses.pick=pick; ses.graded=true;
+  var good = (pick===c.a && pick!==2);
+  if(!isRetry()){
+    if(good) ses.ok++;
+    else {
+      ses.ng++;
+      if(ses.miss.indexOf(c.i)<0) ses.miss.push(c.i);
+      if(S.rt!=='off' && ses.rq.length<6 && ses.rq.indexOf(c.i)<0) ses.rq.push(c.i);
+    }
+    grade(c.i,good);
+  }
+  saveSes(); render();
 }
 function regradeGuess(){
-  var c=BYID[ses.queue[ses.i].i];
+  var c=ses.queue[ses.i];
+  if(isRetry()){ tmp.guessed=true; return render(); }
   grade(c.i,false); ses.ok=Math.max(0,ses.ok-1); ses.ng++;
   if(ses.miss.indexOf(c.i)<0) ses.miss.push(c.i);
-  tmp.guessed=true; toast('当日に戻しました'); render();
+  if(S.rt!=='off' && ses.rq.length<6 && ses.rq.indexOf(c.i)<0) ses.rq.push(c.i);
+  tmp.guessed=true; saveSes(); toast('翌日に回しました'); render();
 }
 function nextCard(){
   tick();
-  ses.done++; ses.i++; ses.pick=null; ses.graded=false; ses.sh=false; tmp.guessed=false;
-  if(ses.i>=ses.queue.length){ view='finish'; }
-  render();
+  ses.done++; ses.i++; ses.pick=null; ses.graded=false; ses.sh=false; ses.shi=0; tmp.guessed=false;
+  if(ses.i>=ses.queue.length){
+    if(ses.rq && ses.rq.length){          /* 外した肢を、最後に1回だけ出し直す */
+      ses.rstart=ses.queue.length;
+      for(var k=0;k<ses.rq.length;k++) ses.queue.push(BYID[ses.rq[k]]);
+      ses.rq=[]; toast('外した肢をもう一度だけ');
+    } else { view='finish'; S.ses=null; }
+  }
+  saveSes(); render();
 }
 
 /* ---------- 描画 ---------- */
@@ -360,7 +412,7 @@ function timeStats(){
   for(var k in S.log){ var sc=S.log[k].sec||0; all+=sc; if(t-k<7){ w+=sc; } if(S.log[k].n) days++; }
   return {day:d, week:w, all:all, days:days};
 }
-function stairCounts(){ var c=[0,0,0,0,0];
+function stairCounts(){ var c=[0,0,0,0];
   for(var k in S.L){ var L=S.L[k]; if(BYID[k]) c[L.st]++; } return c; }
 
 function vGloss(){
@@ -392,7 +444,7 @@ function vHome(){
     '<div class="sub">TAC 27年目標 短答問題集 '+CARDS.length+'肢 ／ 12月短答</div></div></div><div class="rule"></div>';
 
   h+='<div class="stair">';
-  for(var i=0;i<5;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+STEPNM[i]+'</span></div>';
+  for(var i=0;i<STEPS.length;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+STEPNM[i]+'</span></div>';
   h+='</div>';
   h+='<div class="lbl">今日の復習 '+d+'肢 ／ 未着手 '+np+'肢（'+S.rank+'ランク）</div>';
   var T=timeStats();
@@ -417,6 +469,17 @@ function vHome(){
        : 'すべての肢を同じ確率で出します。')+'</div>';
   h+=paceHtml();
 
+  h+='<div class="lbl" style="margin-top:18px">外した肢の扱い</div><div class="seg">'+
+     '<button data-rt="on" class="'+(S.rt!=='off'?'on':'')+'">その場でもう一度</button>'+
+     '<button data-rt="off" class="'+(S.rt==='off'?'on':'')+'">翌日まで出さない</button></div>';
+  h+='<div class="note" style="margin-top:-10px">外した肢は翌日に回します。「その場でもう一度」なら、'+
+     'セッションの最後に1回だけ出し直します（最大6肢）。この1回は日程にも記録にも影響しません。</div>';
+  var rz=resumable();
+  if(rz){
+    h+='<div class="lbl" style="margin-top:20px">途中のセッション</div>';
+    h+='<button class="mode" data-go="resume" style="border-color:var(--ao)"><b>続きから</b>'+
+       '<span>'+(MODES[rz.m]?MODES[rz.m].nm:'論点')+'　'+rz.i+' / '+rz.q.length+'肢まで完了</span></button>';
+  }
   h+='<div class="lbl" style="margin-top:20px">今日やる分</div>';
   h+='<button class="mode" data-go="r15"><b>15分ルーティン</b><span>復習'+Math.min(d,40)+' ＋ 新規'+Math.min(np,20)+'。論点をまたいで出します</span></button>';
   h+='<button class="mode" data-go="r10"><b>10分コース</b><span>復習'+Math.min(d,25)+' ＋ 新規'+Math.min(np,12)+'</span></button>';
@@ -460,12 +523,14 @@ function vPick(){
 }
 function vCard(){
   var c=ses.queue[ses.i], L=S.L[c.i];
+  var rt=isRetry();
   var h='<div class="hd"><div class="sub">'+(ses.i+1)+' / '+ses.queue.length+' ・ '+
-    (MODES[ses.mode]?MODES[ses.mode].nm:'論点')+'</div>'+
+    (rt?'おさらい':(MODES[ses.mode]?MODES[ses.mode].nm:'論点'))+'</div>'+
     '<button class="sub" data-go="home" style="font-size:12px">中断</button></div><div class="rule"></div>';
 
   h+='<div class="qwrap"><div class="tag"><span class="rk '+c.r+'">'+c.r+'</span>'+
     '<span>'+esc(c.t)+'</span>'+
+    (rt?'<span class="again">もう一度</span>':'')+
     (c.hit>=3?'<span class="hot">頻出</span>':'')+
     (c.s?'<span class="st">'+'★'.repeat(Math.min(c.s,5))+'</span>':'')+
     (c.y.length?'<span>'+c.y.join(' ')+'</span>':'')+
@@ -476,29 +541,41 @@ function vCard(){
     h+='<div class="ans"><button class="o" data-pick="1">○<small>正しい</small></button>'+
        '<button class="x" data-pick="0">×<small>誤り</small></button>'+
        '<button class="h" data-pick="2">？<small>わからない</small></button></div>';
-    h+='<div class="note">迷ったら？を押してください。当日に戻します。</div>';
+    h+='<div class="note">'+(rt
+      ? 'さっき外した肢のおさらいです。ここでの答えは日程にも記録にも影響しません。'
+      : '迷ったら？を押してください。翌日に回します。')+'</div>';
   } else {
     var right=(ses.pick===c.a && ses.pick!==2);
     h+='<div class="verdict '+(right?'ok':'ng')+'">';
     h+='<div class="vhead">正解は '+(c.a?'○':'×')+'　'+
-      (ses.pick===2?'保留 — 当日に戻します':(right?'正解':'不正解 — 当日に戻します'))+'</div>';
+      (rt ? (right?'今度は正解':'まだ曖昧。翌日また出ます')
+          : (ses.pick===2?'保留 — 翌日に回します':(right?'正解':'不正解 — 翌日に回します')))+'</div>';
     h+='<div class="why">'+esc(c.w)+'</div>';
     if(c.arts.length) h+='<div class="arts">'+lawOf(c)+' '+c.arts.join('／')+'</div>';
     h+='</div>';
 
     h+='<div class="disc">';
-    if(c.sh){
-      var sh=SH[c.sh];
+    if(c.shs && c.shs.length){
+      var si=Math.min(ses.shi||0, c.shs.length-1), art=c.shs[si], sh=SH[art];
       var ref=sh.b?(sh.b+(sh.p?' p.'+sh.p:'')):'';
       h+='<button data-sh="1"><b>'+(ses.sh?'趣旨を閉じる':'趣旨を見る')+'</b> — '+
-        lawOf(c)+c.sh+(ref?'　'+ref:'')+'</button>';
+        lawOf(c)+c.shs[0]+(c.shs.length>1?' ほか':'')+'</button>';
       if(ses.sh){
         var lv=S.lv==='t'?'t':'e';
+        h+='<div class="caution">趣旨はその条文全体の考え方です。<b>この肢の正誤は上の理由で決まります。</b>'+
+           '例外を問う肢では、趣旨だけ読むと逆の結論に見えることがあります。</div>';
+        if(c.shs.length>1){
+          h+='<div class="chips">';
+          c.shs.forEach(function(a,i){
+            h+='<button data-shi="'+i+'" class="'+(i===si?'on':'')+'">'+lawOf(c)+a+
+               (i===0?'（この肢の根拠）':'')+'</button>'; });
+          h+='</div>';
+        }
         h+='<div class="seg" style="margin:10px 0 0">'+
            '<button data-lv="e" class="'+(lv==='e'?'on':'')+'">やさしく</button>'+
            '<button data-lv="t" class="'+(lv==='t'?'on':'')+'">くわしく</button></div>';
         h+='<div class="body" style="margin-top:8px">'+esc(lv==='t'?sh.t:sh.e)+
-          '<span class="src">'+
+          '<span class="src">'+lawOf(c)+art+'　'+
           (lv==='e'
             ? 'かみくだいた説明です。答案で使う言い回しは「くわしく」のほうを見てください。'
             : (ref?ref+'テキスト':'')+(sh.k==='T'?'の趣旨を要約':'。テキストに趣旨の明示がないため補足。答案の根拠には使わないこと'))+
@@ -510,7 +587,7 @@ function vCard(){
     h+='</div>';
 
     h+='<div class="next"><button data-next="1">次へ</button>';
-    if(right && !tmp.guessed) h+='<button class="ghost" data-guess="1">勘だった</button>';
+    if(right && !tmp.guessed && !rt) h+='<button class="ghost" data-guess="1">勘だった</button>';
     h+='</div>';
     h+='<div class="note">戻る箇所は最後にまとめて出します。ここでテキストは開かなくて大丈夫です。</div>';
   }
@@ -527,7 +604,8 @@ function vFinish(){
     Object.keys(by).forEach(function(t){
       var arts={}; by[t].forEach(function(c){ c.arts.forEach(function(a){arts[a]=1;}); });
       var pg={};
-      by[t].forEach(function(c){ if(c.sh&&SH[c.sh]&&SH[c.sh].p) pg[SH[c.sh].b+' p.'+SH[c.sh].p]=1; });
+      by[t].forEach(function(c){ (c.shs||[]).forEach(function(a){
+        if(SH[a]&&SH[a].p) pg[SH[a].b+' p.'+SH[a].p]=1; }); });
       h+='<div class="back"><b>'+esc(t)+'</b>（'+by[t][0].b+'）　'+by[t].length+'肢<br>'+
          (Object.keys(arts).length?Object.keys(arts).slice(0,8).join('／'):'条文の記載なし')+
          (Object.keys(pg).length?'<br>テキスト '+Object.keys(pg).sort().slice(0,6).join('、'):'')+'</div>';
@@ -536,16 +614,17 @@ function vFinish(){
   } else {
     h+='<div class="lbl">全問正解。戻る箇所はありません。</div>';
   }
-  h+='<div class="next" style="margin-top:24px"><button data-go="home">ホームへ</button></div>';
+  h+='<div class="note" style="margin-top:14px">外した肢は翌日に出ます。今日はもう出てきません。</div>';
+  h+='<div class="next" style="margin-top:20px"><button data-go="home">ホームへ</button></div>';
   return h;
 }
 function vDash(){
   var t=today(), h='<div class="hd"><h1 class="ttl">記録</h1></div><div class="rule"></div>';
   var cs=stairCounts(), learned=Object.keys(S.L).length;
   h+='<div class="stair">';
-  for(var i=0;i<5;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+STEPNM[i]+'</span></div>';
+  for(var i=0;i<STEPS.length;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+STEPNM[i]+'</span></div>';
   h+='</div>';
-  h+='<div class="lbl">着手 '+learned+' / '+CARDS.length+'肢　・　2週間の段に '+cs[4]+'肢</div>';
+  h+='<div class="lbl">着手 '+learned+' / '+CARDS.length+'肢　・　2週間の段に '+cs[3]+'肢</div>';
 
   h+='<div class="lbl" style="margin-top:22px">今後7日の復習量</div>';
   var mx=1,fut=[];
@@ -642,14 +721,17 @@ function render(){
 
 /* ---------- 操作 ---------- */
 document.addEventListener('click',function(e){
-  var el=e.target.closest('[data-go],[data-pick],[data-next],[data-sh],[data-guess],[data-rank],[data-mix],[data-lv],[data-topic],[data-reset],[data-io]');
+  var el=e.target.closest('[data-go],[data-pick],[data-next],[data-sh],[data-shi],[data-guess],[data-rank],[data-mix],[data-lv],[data-rt],[data-topic],[data-reset],[data-io]');
   if(!el) return;
   var d=el.dataset;
   if(d.rank){ S.rank=d.rank; save(); return render(); }
   if(d.mix){ S.mix=d.mix; save(); return render(); }
   if(d.lv){ S.lv=d.lv; save(); return render(); }
+  if(d.rt){ S.rt=d.rt; save(); return render(); }
   if(d.go){ if(d.go==='load'){ tmp.err=null; view='load'; return render(); }
-            if(d.go==='home'){view='home'; ses=null; return render();}
+            if(d.go==='resume'){ return resumeSession(); }
+            if(d.go==='home'){ if(ses){ saveSes(); Store.set(KEY,JSON.stringify(S)); }
+                               view='home'; ses=null; return render(); }
             if(d.go==='dash'){view='dash'; return render();}
             if(d.go==='gloss'){view='gloss'; return render();}
             if(d.go==='pick'){view='pick'; return render();}
@@ -657,7 +739,8 @@ document.addEventListener('click',function(e){
   if(d.topic){ return startSession('r15', d.topic); }
   if(d.pick!==undefined) return answer(Number(d.pick));
   if(d.next) return nextCard();
-  if(d.sh){ ses.sh=!ses.sh; return render(); }
+  if(d.sh){ ses.sh=!ses.sh; ses.shi=0; return render(); }
+  if(d.shi!==undefined){ ses.shi=Number(d.shi); return render(); }
   if(d.guess) return regradeGuess();
   if(d.io){
     if(d.io==='out'||d.io==='in'){ tmp.io=(tmp.io===d.io?null:d.io); return render(); }
