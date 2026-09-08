@@ -311,7 +311,8 @@ var MODES={
   r10:{nm:'半分だけ',f:0.5},
   r1:{nm:'1分だけ',n:5},
   rev:{nm:'復習だけ',f:1,revOnly:true},
-  note:{nm:'メモのある肢',f:1,noteOnly:true}
+  note:{nm:'メモのある肢',f:1,noteOnly:true},
+  more:{nm:'もう少しやる',f:0.5,over:true}      /* 今日の枠を使い切っても続けられる */
 };
 function poolCards(){ var o=[]; for(var i=0;i<CARDS.length;i++) if(rankOk(CARDS[i])) o.push(CARDS[i]); return o; }
 function poolTotal(){ return poolCards().length; }
@@ -386,7 +387,9 @@ function startSession(mode,topic){
   var M=MODES[mode]||MODES.r15;
   var done={}; var z=S.ses;
   if(z && z.day===today()) for(var k=0;k<z.i;k++) done[z.q[k]]=1;   /* 今日すでに解いた肢は出さない */
-  var total=M.n?M.n:Math.max(1, Math.round(budget()*M.f));
+  var total = M.n ? M.n
+            : M.over ? Math.max(5, Math.round(cap()*M.f))   /* 枠を無視して前倒しで進める */
+            : Math.max(1, Math.round(budget()*M.f));
   var seen=S.cycSeen||{};
   var d=dueList().filter(function(c){ return !done[c.i]; });
   if(topic) d=d.filter(function(c){return c.t===topic;});
@@ -607,6 +610,11 @@ function vHome(){
   h+='<button class="mode" data-go="rev"><b>復習だけ</b><span>新規を止めて、戻ってきた'+rv+'肢だけ</span></button>';
   var nn=0; for(var kk in (S.N||{})) if(S.N[kk]) nn++;
   if(nn) h+='<button class="mode" data-go="note"><b>メモのある肢</b><span>'+nn+'肢。自分で書き足した分だけ回す</span></button>';
+  var more=Math.max(5, Math.round(cap()*0.5));
+  h+='<button class="mode" data-go="more"'+(bd===0?' style="border-color:var(--ao)"':'')+
+     '><b>もう少しやる</b><span>'+more+'肢を前倒し。'+
+     (bd===0?'今日の枠は終わっていますが、続けられます。':'枠とは別に、先の肢を先取りします。')+
+     '明日の枠がそのぶん減ります</span></button>';
   h+='<button class="mode" data-go="pick"><b>論点を選ぶ</b><span>65論点から。直前期の金商法・商法など</span></button>';
 
   h+=nav('home');
