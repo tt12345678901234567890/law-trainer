@@ -468,7 +468,7 @@ function regradeGuess(){
 }
 function nextCard(){
   tick();
-  ses.done++; ses.i++; ses.pick=null; ses.graded=false; ses.sh=false; ses.shi=0; tmp.guessed=false; tmp.note=0;
+  ses.done++; ses.i++; ses.pick=null; ses.graded=false; ses.sh=false; ses.shi=0; tmp.guessed=false; tmp.note=0; tmp.ask=0;
   if(ses.i>=ses.queue.length){
     if(ses.rq && ses.rq.length){          /* 外した肢を、最後に1回だけ出し直す */
       ses.rstart=ses.queue.length;
@@ -480,6 +480,22 @@ function nextCard(){
 }
 
 /* ---------- 描画 ---------- */
+function askText(c){
+  var law=lawOf(c), sh=(c.shs&&c.shs.length)?SH[c.shs[0]]:null;
+  return '公認会計士短答式・企業法の問題です。次の肢について、なぜこういうルールや手続きに'+
+    'なっているのかを、法律の予備知識がない人にも分かるように説明してください。\n\n'+
+    '【肢】'+c.q+'\n'+
+    '【正解】'+(c.a?'○（正しい）':'×（誤り）')+'\n'+
+    '【問題集の解説】'+c.w+'\n'+
+    (c.arts.length?('【根拠条文】'+law+' '+c.arts.join('／')+'\n'):'')+
+    '【論点】'+c.t+'\n'+
+    (sh?('【条文の趣旨（既知）】'+sh.t+'\n'):'')+
+    '\n知りたいのは次の3点です。\n'+
+    '1. この手続きやルールは、誰のどんな利益を守るために置かれているのか。それがないと何が起きるのか。\n'+
+    '2. 具体的な場面を1つ挙げて、条文がどう働くのかを示してください。\n'+
+    '3. この肢のどこが引っかけか。次に似た肢が出たときの見分け方。\n\n'+
+    '400字程度で、専門用語は使うたびに言い換えを添えてください。';
+}
 function esc(s){ return String(s).replace(/[&<>]/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[m];}); }
 function toast(m){ var t=document.getElementById('toast'); t.textContent=m; t.className='toast on';
   clearTimeout(toast._t); toast._t=setTimeout(function(){t.className='toast';},1500); }
@@ -662,9 +678,10 @@ function vCard(){
     h+='<div class="disc">';
     if(c.shs && c.shs.length){
       var si=Math.min(ses.shi||0, c.shs.length-1), art=c.shs[si], sh=SH[art];
+      function artName(k){ return k.replace('|',''); }
       var ref=sh.b?(sh.b+(sh.p?' p.'+sh.p:'')):'';
       h+='<button data-sh="1"><b>'+(ses.sh?'趣旨を閉じる':'趣旨を見る')+'</b> — '+
-        lawOf(c)+c.shs[0]+(c.shs.length>1?' ほか':'')+'</button>';
+        artName(c.shs[0])+(c.shs.length>1?' ほか':'')+'</button>';
       if(ses.sh){
         var lv=S.lv==='t'?'t':'e';
         h+='<div class="caution">趣旨はその条文全体の考え方です。<b>この肢の正誤は上の理由で決まります。</b>'+
@@ -672,7 +689,7 @@ function vCard(){
         if(c.shs.length>1){
           h+='<div class="chips">';
           c.shs.forEach(function(a,i){
-            h+='<button data-shi="'+i+'" class="'+(i===si?'on':'')+'">'+lawOf(c)+a+
+            h+='<button data-shi="'+i+'" class="'+(i===si?'on':'')+'">'+artName(a)+
                (i===0?'（この肢の根拠）':'')+'</button>'; });
           h+='</div>';
         }
@@ -680,7 +697,7 @@ function vCard(){
            '<button data-lv="e" class="'+(lv==='e'?'on':'')+'">やさしく</button>'+
            '<button data-lv="t" class="'+(lv==='t'?'on':'')+'">くわしく</button></div>';
         h+='<div class="body" style="margin-top:8px">'+esc(lv==='t'?sh.t:sh.e)+
-          '<span class="src">'+lawOf(c)+art+'　'+
+          '<span class="src">'+artName(art)+'　'+
           (lv==='e'
             ? 'かみくだいた説明です。答案で使う言い回しは「くわしく」のほうを見てください。'
             : (ref?ref+'テキスト':'')+(sh.k==='T'?'の趣旨を要約':'。テキストに趣旨の明示がないため補足。答案の根拠には使わないこと'))+
@@ -691,6 +708,17 @@ function vCard(){
     }
     h+='</div>';
 
+    h+='<div class="disc" style="margin-top:10px">';
+    if(tmp.ask){
+      h+='<textarea id="ask" readonly style="min-height:150px">'+esc(askText(c))+'</textarea>'+
+         '<div class="mini"><button data-ask="copy">全部コピー</button>'+
+         '<button data-ask="close">閉じる</button></div>'+
+         '<div class="note">これをClaudeに貼れば、この肢に絞った解説が返ってきます。'+
+         '返ってきた説明は下の「メモを書く」に貼って残してください。</div>';
+    } else {
+      h+='<button data-ask="open"><b>この肢をClaudeに聞く</b> — 質問文をまるごとコピーします</button>';
+    }
+    h+='</div>';
     var note=(S.N||{})[c.i]||'';
     h+='<div class="disc" style="margin-top:10px">';
     if(tmp.note){
@@ -825,6 +853,18 @@ function vDash(){
      '完了した周: '+(S.rounds||0)+'周。</div>';
   h+='<div class="mini"><button data-io="cyc">この周を仕切り直す</button></div>';
 
+  var hard=[]; for(var hk in S.L){ if((S.L[hk].miss||0)>=2 && BYID[hk]) hard.push({i:hk,m:S.L[hk].miss}); }
+  hard.sort(function(a,b){return b.m-a.m;});
+  h+='<div class="lbl" style="margin-top:22px">つまずいている肢の番号</div>';
+  h+='<div class="note">2回以上外した肢は'+hard.length+'件。この番号を私（Claude）に渡してもらえれば、'+
+     'その肢だけの解説を書き足せます。</div>';
+  if(hard.length){
+    h+='<div class="mini"><button data-io="hard">番号を書き出す</button></div>';
+    if(tmp.io==='hard') h+='<textarea id="io" readonly>'+
+      hard.map(function(x){return x.i;}).join(', ')+'</textarea>'+
+      '<div class="mini"><button data-io="copy">全部コピー</button></div>';
+  }
+
   h+='<div class="lbl" style="margin-top:22px">記録の保存</div><div class="note">'+
      ({claude:'このチャット内に保存しています。',local:'この端末のブラウザに保存しています。',
        memory:'保存できていません。画面を閉じると消えます。',none:'確認中'}[PERSIST])+'</div>';
@@ -864,7 +904,7 @@ function render(){
 
 /* ---------- 操作 ---------- */
 document.addEventListener('click',function(e){
-  var el=e.target.closest('[data-go],[data-pick],[data-next],[data-sh],[data-shi],[data-guess],[data-rank],[data-mix],[data-lv],[data-rt],[data-cyc],[data-note],[data-topic],[data-reset],[data-io]');
+  var el=e.target.closest('[data-go],[data-pick],[data-next],[data-sh],[data-shi],[data-ask],[data-guess],[data-rank],[data-mix],[data-lv],[data-rt],[data-cyc],[data-note],[data-topic],[data-reset],[data-io]');
   if(!el) return;
   var d=el.dataset;
   if(d.rank){ S.rank=d.rank; save(); return render(); }
@@ -883,6 +923,19 @@ document.addEventListener('click',function(e){
   if(d.topic){ return startSession('r15', d.topic); }
   if(d.pick!==undefined) return answer(Number(d.pick));
   if(d.next) return nextCard();
+  if(d.ask){
+    if(d.ask==='open'){ tmp.ask=1; return render(); }
+    if(d.ask==='close'){ tmp.ask=0; return render(); }
+    var at=document.getElementById('ask');
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(at.value).then(function(){ toast('コピーしました'); },
+        function(){ toast('長押しで選んでコピーしてください'); });
+    } else {
+      try{ at.select(); at.setSelectionRange(0,999999); document.execCommand('copy'); toast('コピーしました'); }
+      catch(e){ toast('長押しで選んでコピーしてください'); }
+    }
+    return;
+  }
   if(d.note){
     var cn=ses.queue[ses.i];
     if(d.note==='edit'){ tmp.note=1; return render(); }
@@ -900,7 +953,7 @@ document.addEventListener('click',function(e){
   if(d.shi!==undefined){ ses.shi=Number(d.shi); return render(); }
   if(d.guess) return regradeGuess();
   if(d.io){
-    if(d.io==='out'||d.io==='in'){ tmp.io=(tmp.io===d.io?null:d.io); return render(); }
+    if(d.io==='out'||d.io==='in'||d.io==='hard'){ tmp.io=(tmp.io===d.io?null:d.io); return render(); }
     if(d.io==='cyc'){ if(confirm('今周の進み具合をリセットします。学習記録は残ります。')){ resetCycle(); toast('仕切り直しました'); render(); } return; }
     if(d.io==='exam'){ var ev=document.getElementById('exam').value;
       S.examStr=ev||null; Store.set(KEY,JSON.stringify(S));
