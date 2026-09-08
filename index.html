@@ -242,14 +242,11 @@ var S=null, ses=null, view='home', tmp={};
 var CYC=[5,7,10,14];                       /* 1周の目標日数（教材：Ａのみ5日、ＡＢＣ全部で10日） */
 function cyc(){ return S.cyc||10; }
 /* 最長でも1周ぶんで必ず戻ってくるようにする */
-function STEPSf(){ var c=cyc();
-  if(c<=5) return [1,2,3,c];
-  if(c<=7) return [1,3,5,c];
-  return [1,3,7,c];
-}
-function STEPNMf(){ return STEPSf().map(function(d){ return d===1?'翌日':d+'日後'; }); }
+/* 段は3つだけ。正解した肢は「次の周」まで出さない（周回そのものが復習になる） */
+function STEPSf(){ var c=cyc(); return [1, Math.min(3,c), c]; }
+function STEPNMf(){ var st=STEPSf(); return [st[0]+'日後', st[1]+'日後', '次の周']; }
 function today(){ var d=new Date(); d.setHours(0,0,0,0); return Math.floor(d.getTime()/864e5); }
-function fresh(){ return {L:{},log:{},rank:'A',mix:'freq',lv:'e',rt:'on',ses:null,cyc:10,cycStart:null,cycSeen:{},rounds:0,N:{},examStr:null,ver:5}; }
+function fresh(){ return {L:{},log:{},rank:'A',mix:'freq',lv:'e',rt:'on',ses:null,cyc:10,cycStart:null,cycSeen:{},rounds:0,N:{},examStr:null,ver:6}; }
 S=fresh();
 
 function load(){ return Store.get(KEY).then(function(v){
@@ -258,6 +255,14 @@ function load(){ return Store.get(KEY).then(function(v){
     if(!S.ver||S.ver<4){                       /* 旧データの段を1つ繰り上げる */
       for(var k in S.L){ var L=S.L[k]; L.st=Math.max(0, Math.min((L.st||0)-1, 3)); }
       S.ver=4;
+    }
+    if(S.ver<6){                               /* 4段→3段。正解済みの肢は次の周へ */
+      var t6=today();
+      for(var k6 in S.L){ var L6=S.L[k6];
+        L6.st=Math.min(L6.st||0, 2);
+        if(L6.st===2) L6.due=Math.min(L6.due, t6+cyc());
+      }
+      S.ver=6;
     }
   }); }
 var saveT=null;
@@ -351,13 +356,36 @@ function resetCycle(){ S.cycStart=today(); S.cycSeen={}; save(); }
 function doneToday(){ var lg=S.log[today()]; return lg?lg.n:0; }
 function budget(){ return Math.max(0, cap()-doneToday()); }
 /* 復習が枠を超えた日は、超えたぶんを自動で後日に送る（雪だるまを防ぐ） */
-function trimDue(list){
-  var t=today();
-  if(S.defDay===t || list.length<=cap()) return {list:list, moved:0};
-  var keep=list.slice(0,cap()), rest=list.slice(cap());
-  for(var i=0;i<rest.length;i++) S.L[rest[i].i].due=t+1+Math.floor(i/cap());
-  S.defDay=t; save();
-  return {list:keep, moved:rest.length};
+/* 出題の内訳。ホームの表示もセッションの組み立ても、必ずこれを通す */
+function planLists(total, topic, M){
+  M=M||{};
+  var t=today(), seen=S.cycSeen||{}, done={}, z=S.ses;
+  if(z && z.day===t) for(var k=0;k<z.i;k++) done[z.q[k]]=1;
+  var d=dueList().filter(function(c){ return !done[c.i]; });
+  if(topic) d=d.filter(function(c){ return c.t===topic; });
+  if(M.noteOnly) d=CARDS.filter(function(c){ return S.N&&S.N[c.i]&&!done[c.i]; });
+  d.sort(function(a,b){ return ((S.L[a.i]||{}).due-(S.L[b.i]||{}).due)||((S.L[b.i]||{}).miss||0)-((S.L[a.i]||{}).miss||0); });
+  var fresh=[], again=[], overdue=0;
+  for(var i=0;i<d.length;i++){
+    var c=d[i];
+    if(seen[c.i]){ again.push(c); if((S.L[c.i]||{}).due<t) overdue++; }
+    else fresh.push(c);
+  }
+  fresh=fresh.slice(0,total);
+  var np=[];
+  if(!M.revOnly && !M.noteOnly && fresh.length<total){
+    np=newPool().filter(function(c){ return !done[c.i] && !seen[c.i]; });
+    if(topic) np=np.filter(function(c){ return c.t===topic; });
+  }
+  /* 戻ってきた肢は枠の3割まで。ただし期限切れが溜まっていればそのぶんは必ず出す */
+  var ex=M.noteOnly?0:Math.min(again.length, Math.max(2, Math.round(total*0.3), overdue));
+  return {fresh:fresh, np:np, neu:Math.max(0,Math.min(np.length,total-fresh.length)),
+          again:again.slice(0,ex), total:total};
+}
+function planCounts(total, topic, M){
+  var p=planLists(total, topic, M);
+  return {fresh:p.fresh.length, neu:p.neu, again:p.again.length,
+          all:p.fresh.length+p.neu+p.again.length};
 }
 function examDay(){
   if(!S.examStr) return null;
@@ -390,23 +418,10 @@ function startSession(mode,topic){
   var total = M.n ? M.n
             : M.over ? Math.max(5, Math.round(cap()*M.f))   /* 枠を無視して前倒しで進める */
             : Math.max(1, Math.round(budget()*M.f));
-  var seen=S.cycSeen||{};
-  var d=dueList().filter(function(c){ return !done[c.i]; });
-  if(topic) d=d.filter(function(c){return c.t===topic;});
-  if(M.noteOnly) d=CARDS.filter(function(c){ return S.N&&S.N[c.i]&&!done[c.i]; });
-  d.sort(function(a,b){ return ((S.L[a.i]||{}).due-(S.L[b.i]||{}).due)||((S.L[b.i]||{}).miss||0)-((S.L[a.i]||{}).miss||0); });
-  var fresh1=[], again=[];
-  for(var di=0;di<d.length;di++){ (seen[d[di].i]?again:fresh1).push(d[di]); }
-  var q=fresh1.slice(0,total), moved=0;
-  if(!M.revOnly && !M.noteOnly && q.length<total){
-    var np=newPool().filter(function(c){ return !done[c.i] && !seen[c.i]; });
-    if(topic) np=np.filter(function(c){return c.t===topic;});
-    q=q.concat(weightedPick(np,total-q.length)); }
-  /* 今周すでに解いたのに戻ってきた肢（外したもの）は、枠の3割まで上乗せ */
-  if(!M.noteOnly && again.length){
-    var extra=Math.min(again.length, Math.max(2, Math.round(total*0.3)));
-    q=q.concat(again.slice(0,extra));
-  }
+  var p=planLists(total, topic, M);
+  var q=p.fresh.slice(0);
+  if(p.neu>0) q=q.concat(weightedPick(p.np, p.neu));
+  q=q.concat(p.again);
   if(!q.length){ toast(budget()?'出す問題がありません':'今日の枠は終わりました'); return; }
 
   ses={mode:mode,topic:topic||null,queue:q,i:0,done:0,ok:0,ng:0,miss:[],rq:[],rstart:undefined,
@@ -438,7 +453,7 @@ function isRetry(){ return ses && ses.rstart!==undefined && ses.i>=ses.rstart; }
 function grade(id,good){
   var t=today(), L=S.L[id]||{st:-1,miss:0,sh:0,nw:1};
   if(L.st===undefined)L.st=-1;
-  if(good){ L.st=Math.min(L.st+1,3); }
+  if(good){ L.st = (L.st<0) ? 2 : Math.min(L.st+1,2); }   /* 初回から正解なら次の周まで出さない */
   else { L.st=0; L.miss=(L.miss||0)+1; }
   L.due=t+STEPSf()[L.st]; L.last=t; S.L[id]=L;
   var lg=S.log[t]||{n:0,ok:0,sec:0}; lg.n++; if(good)lg.ok++;
@@ -525,7 +540,7 @@ function timeStats(){
   for(var k in S.log){ var sc=S.log[k].sec||0; all+=sc; if(t-k<7){ w+=sc; } if(S.log[k].n) days++; }
   return {day:d, week:w, all:all, days:days};
 }
-function stairCounts(){ var c=[0,0,0,0];
+function stairCounts(){ var c=[0,0,0];
   for(var k in S.L){ var L=S.L[k]; if(BYID[k]) c[L.st]++; } return c; }
 
 function vGloss(){
@@ -558,7 +573,7 @@ function vHome(){
 
   h+='<div class="stair">';
   var nm=STEPNMf();
-  for(var i=0;i<4;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+nm[i]+'</span></div>';
+  for(var i=0;i<3;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+nm[i]+'</span></div>';
   h+='</div>';
   h+='<div class="lbl">今日の復習 '+d+'肢 ／ 未着手 '+np+'肢（'+S.rank+'ランク）</div>';
   var T=timeStats();
@@ -603,16 +618,22 @@ function vHome(){
        '<span>'+(MODES[rz.m]?MODES[rz.m].nm:'論点')+'　'+rz.i+' / '+rz.q.length+'肢まで完了</span></button>';
   }
   h+='<div class="lbl" style="margin-top:20px">今日やる分</div>';
-  var bd=budget(), rv=Math.min(d,bd);
-  h+='<button class="mode" data-go="r15"><b>今日のぶん</b><span>'+bd+'肢（復習'+rv+' ＋ 新規'+Math.max(0,Math.min(np,bd-rv))+'）。論点をまたいで出します</span></button>';
-  h+='<button class="mode" data-go="r10"><b>半分だけ</b><span>'+Math.max(1,Math.round(bd*0.5))+'肢。時間がない日に</span></button>';
+  var bd=budget();
+  function brk(p){ var a=[];
+    if(p.fresh) a.push('復習'+p.fresh); if(p.neu) a.push('新規'+p.neu);
+    if(p.again) a.push('戻ってきた'+p.again); return a.join(' ＋ '); }
+  var p1=planCounts(bd);
+  h+='<button class="mode" data-go="r15"><b>今日のぶん</b><span>'+p1.all+'肢（'+brk(p1)+'）。論点をまたいで出します</span></button>';
+  var p2=planCounts(Math.max(1,Math.round(bd*0.5)));
+  h+='<button class="mode" data-go="r10"><b>半分だけ</b><span>'+p2.all+'肢（'+brk(p2)+'）。時間がない日に</span></button>';
   h+='<button class="mode" data-go="r1"><b>1分だけ</b><span>5肢。信号待ちや歯みがき用</span></button>';
-  h+='<button class="mode" data-go="rev"><b>復習だけ</b><span>新規を止めて、戻ってきた'+rv+'肢だけ</span></button>';
+  var p3=planCounts(bd,null,MODES.rev);
+  h+='<button class="mode" data-go="rev"><b>復習だけ</b><span>新規を止めて、戻ってきた'+p3.all+'肢だけ</span></button>';
   var nn=0; for(var kk in (S.N||{})) if(S.N[kk]) nn++;
   if(nn) h+='<button class="mode" data-go="note"><b>メモのある肢</b><span>'+nn+'肢。自分で書き足した分だけ回す</span></button>';
-  var more=Math.max(5, Math.round(cap()*0.5));
+  var pm=planCounts(Math.max(5, Math.round(cap()*0.5)));
   h+='<button class="mode" data-go="more"'+(bd===0?' style="border-color:var(--ao)"':'')+
-     '><b>もう少しやる</b><span>'+more+'肢を前倒し。'+
+     '><b>もう少しやる</b><span>'+pm.all+'肢（'+brk(pm)+'）を前倒し。'+
      (bd===0?'今日の枠は終わっていますが、続けられます。':'枠とは別に、先の肢を先取りします。')+
      '明日の枠がそのぶん減ります</span></button>';
   h+='<button class="mode" data-go="pick"><b>論点を選ぶ</b><span>65論点から。直前期の金商法・商法など</span></button>';
@@ -794,9 +815,9 @@ function vDash(){
   var cs=stairCounts(), learned=Object.keys(S.L).length;
   h+='<div class="stair">';
   var nm=STEPNMf();
-  for(var i=0;i<4;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+nm[i]+'</span></div>';
+  for(var i=0;i<3;i++) h+='<div class="'+(cs[i]?'on':'')+'"><b>'+cs[i]+'</b><span>'+nm[i]+'</span></div>';
   h+='</div>';
-  h+='<div class="lbl">着手 '+learned+' / '+CARDS.length+'肢　・　2週間の段に '+cs[3]+'肢</div>';
+  h+='<div class="lbl">着手 '+learned+' / '+CARDS.length+'肢　・　次の周まで進んだ肢 '+cs[2]+'</div>';
 
   h+='<div class="lbl" style="margin-top:22px">今後7日の復習量</div>';
   var mx=1,fut=[];
