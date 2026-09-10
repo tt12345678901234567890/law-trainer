@@ -119,6 +119,10 @@ button{font-family:inherit;color:inherit;border:0;background:none;cursor:pointer
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
 .chips button{border:1px solid var(--line);background:var(--card);border-radius:20px;
   padding:6px 12px;font-size:11.5px;color:var(--sub)}
+.pin{margin-top:9px;padding:11px 13px;background:#EDF1F7;border-left:3px solid var(--ao);
+  border-radius:0 10px 10px 0;font-family:var(--mincho);font-size:14px;line-height:1.8;text-align:justify}
+.pin b{display:block;font-family:var(--gothic);font-size:11.5px;font-weight:600;color:var(--ao);margin-bottom:4px}
+.body .hit{font-weight:600;background:#E8E2CE;border-radius:2px;padding:0 1px}
 .memo{background:var(--card);border-left:3px solid var(--ao);border-radius:0 10px 10px 0;
   padding:12px 13px;font-size:13.5px;line-height:1.8;white-space:normal;text-align:justify}
 .mini input[type=date]{border:1px solid var(--line);background:var(--card);color:var(--ink);
@@ -239,19 +243,27 @@ function lprobe(){
 
 /* ---------- 状態 ---------- */
 var S=null, ses=null, view='home', tmp={};
-var CYC=[5,7,10,14];                       /* 1周の目標日数（教材：Ａのみ5日、ＡＢＣ全部で10日） */
-function cyc(){ return S.cyc||10; }
+var MINS=[15,20,30,45,60,90];              /* 1日にとれる時間（分） */
+function perDayFromMins(m){ return Math.max(5, Math.floor(m*60/secPer())); }
+function cycFromMins(m){
+  var n=perDayFromMins(m);
+  var neu=Math.max(1, Math.round(n/1.35));   /* 戻ってくる肢を35%と見込む */
+  return Math.max(3, Math.ceil(poolTotal()/neu));
+}
+function dailyMins(){ return S.mins||30; }
+function cyc(){ return cycFromMins(dailyMins()); }
 /* 最長でも1周ぶんで必ず戻ってくるようにする */
 /* 段は3つだけ。正解した肢は「次の周」まで出さない（周回そのものが復習になる） */
 function STEPSf(){ var c=cyc(); return [1, Math.min(3,c), c]; }
 function STEPNMf(){ var st=STEPSf(); return [st[0]+'日後', st[1]+'日後', '次の周']; }
 function today(){ var d=new Date(); d.setHours(0,0,0,0); return Math.floor(d.getTime()/864e5); }
-function fresh(){ return {L:{},log:{},rank:'A',mix:'freq',lv:'e',rt:'on',ses:null,cyc:10,cycStart:null,cycSeen:{},rounds:0,N:{},examStr:null,ver:6}; }
+function fresh(){ return {L:{},log:{},rank:'A',mix:'freq',lv:'e',rt:'on',ses:null,mins:30,hot:0,cycStart:null,cycSeen:{},rounds:0,N:{},examStr:null,ver:6}; }
 S=fresh();
 
 function load(){ return Store.get(KEY).then(function(v){
     try{ S=v?JSON.parse(v):fresh(); }catch(e){ S=fresh(); }
-    if(!S.L)S=fresh(); if(!S.rank)S.rank='A'; if(!S.log)S.log={}; if(!S.mix)S.mix='freq'; if(!S.lv)S.lv='e'; if(!S.rt)S.rt='on'; if(!S.cyc)S.cyc=10; if(!S.cycSeen)S.cycSeen={}; if(!S.N)S.N={};
+    if(!S.L)S=fresh(); if(!S.rank)S.rank='A'; if(!S.log)S.log={}; if(!S.mix)S.mix='freq'; if(!S.lv)S.lv='e'; if(!S.rt)S.rt='on'; if(!S.cycSeen)S.cycSeen={};
+    if(!S.mins){ S.mins = S.cyc ? (S.cyc>=14?20:S.cyc>=10?30:S.cyc>=7?45:60) : 30; } if(!S.N)S.N={};
     if(!S.ver||S.ver<4){                       /* 旧データの段を1つ繰り上げる */
       for(var k in S.L){ var L=S.L[k]; L.st=Math.max(0, Math.min((L.st||0)-1, 3)); }
       S.ver=4;
@@ -291,7 +303,10 @@ function weightedPick(pool, n){
   for(var j=0;j<rest.length && out.length<n;j++) out.push(rest[j]);
   return out;
 }
-function rankOk(c){ return S.rank==='A'?c.r==='A':S.rank==='AB'?c.r!=='C':true; }
+function rankOk(c){
+  if(S.hot && !(c.hit>=1)) return false;      /* 過去問で1回でも出た肢だけ */
+  return S.rank==='A'?c.r==='A':S.rank==='AB'?c.r!=='C':true;
+}
 function dueList(){ var t=today(),o=[];
   for(var k in S.L){ var L=S.L[k]; if(L.due<=t && BYID[k]) o.push(BYID[k]); }
   return o; }
@@ -351,6 +366,16 @@ function markSeen(id){
     S.rounds=(S.rounds||0)+1; S.cycStart=today(); S.cycSeen={};
     toast(S.rounds+'周おわり。次の周に入ります');
   }
+}
+/* 期限切れの復習を、今日から数日に振り分ける（記録は消さない） */
+function spreadDue(days){
+  var t=today(), list=[];
+  for(var k in S.L){ if(BYID[k] && rankOk(BYID[k]) && S.L[k].due<=t) list.push(k); }
+  list.sort(function(a,b){ return (S.L[a].due-S.L[b].due)||((S.L[b].miss||0)-(S.L[a].miss||0)); });
+  var per=Math.ceil(list.length/days);
+  for(var i=0;i<list.length;i++) S.L[list[i]].due=t+Math.floor(i/per);
+  save();
+  return {n:list.length, per:per};
 }
 function resetCycle(){ S.cycStart=today(); S.cycSeen={}; save(); }
 function doneToday(){ var lg=S.log[today()]; return lg?lg.n:0; }
@@ -508,6 +533,35 @@ function nextCard(){
 }
 
 /* ---------- 描画 ---------- */
+/* 解説がその条文を何項何号で引いているかを取り出す */
+function citeOf(c, key){
+  var art=key.split('|')[1], num=art.replace('条','').split('の')[0];
+  var suf=art.indexOf('の')>=0 ? 'の'+art.split('の')[1] : '';
+  var w=(c.w||'').normalize('NFKC');
+  var re=new RegExp(num+'条'+(suf?suf:'')+'((?:\\s*\\d{1,2}\\s*[項号]|\\s*柱書|\\s*本文|\\s*ただし書|\\s*かっこ書|\\s*各号)*)');
+  var m=re.exec(w);
+  var tail=m?((m[1]||'').replace(/\s/g,'')):'';
+  return {full:art+tail, subs:(tail.match(/\d{1,2}[項号]|柱書|本文|ただし書|かっこ書|各号/g)||[])};
+}
+function subLabels(subs){
+  var o=[], hou=null, ko=null;
+  for(var i=0;i<subs.length;i++){
+    if(/項$/.test(subs[i]) && i+1<subs.length && /号$/.test(subs[i+1])) o.push(subs[i]+subs[i+1]);
+    o.push(subs[i]);
+    if(!hou && /項$/.test(subs[i])) hou=subs[i];
+    if(!ko && /号$/.test(subs[i])) ko=subs[i];
+  }
+  if(hou&&ko&&o.indexOf(hou+ko)<0) o.push(hou+ko);   /* 「1項柱書1号」のように間に語が挟まる形 */
+  return o;
+}
+function markSubs(html, subs){
+  var seen={};
+  for(var i=0;i<subs.length;i++){
+    var t=subs[i]; if(seen[t]||!/^\d/.test(t)) continue; seen[t]=1;
+    html=html.split(t).join('<b class="hit">'+t+'</b>');
+  }
+  return html;
+}
 function askText(c){
   var law=lawOf(c), sh=(c.shs&&c.shs.length)?SH[c.shs[0]]:null;
   return '公認会計士短答式・企業法の問題です。次の肢について、なぜこういうルールや手続きに'+
@@ -557,11 +611,11 @@ function vLoad(){
     '<div class="sub">最初に一度だけ、教材の読み込みが必要です</div></div></div><div class="rule"></div>';
   h+='<div class="lead">このアプリには教材が入っていません。市販・配布された教材の複製を'+
      'インターネット上に置かないための作りです。<br><br>'+
-     'お手元の <b>cards.json</b> をこの端末から選んでください。読み込んだ内容は'+
+     'お手元の <b>law_cards.json</b> をこの端末から選んでください。読み込んだ内容は'+
      'この端末の中だけに保存され、次回からは自動で開きます。</div>';
   if(tmp.err) h+='<div class="alert">'+esc(tmp.err)+'</div>';
   h+='<label class="pick">教材ファイルを選ぶ<input type="file" id="pick"></label>';
-  h+='<div class="note">ファイルアプリに保存した cards.json を選びます。'+
+  h+='<div class="note">ファイルアプリに保存した law_cards.json を選びます。'+
      (PERSIST==='memory'?'（この環境では保存できないため、開くたびに選び直しになります）':'')+'</div>';
   return h;
 }
@@ -598,12 +652,13 @@ function vHome(){
        : 'すべての肢を同じ確率で出します。')+'</div>';
   h+=paceHtml();
 
-  h+='<div class="lbl" style="margin-top:20px">1周する日数</div><div class="seg">';
-  CYC.forEach(function(n){ var per=Math.ceil(poolTotal()/n);
-    h+='<button data-cyc="'+n+'" class="'+(cyc()===n?'on':'')+'">'+n+'日<br>'+
-     '<span style="font-size:9.5px;opacity:.75">'+per+'肢<br>約'+mins(Math.round(per*1.3))+'分</span></button>'; });
+  h+='<div class="lbl" style="margin-top:20px">1日にとれる時間</div><div class="seg">';
+  MINS.forEach(function(m){
+    h+='<button data-mins="'+m+'" class="'+(dailyMins()===m?'on':'')+'">'+m+'分<br>'+
+     '<span style="font-size:9.5px;opacity:.75">1周'+cycFromMins(m)+'日</span></button>'; });
   h+='</div><div class="note" style="margin-top:-10px">'+
-     '教材の目安は「まずはＡのみ5日で1周」「ＡＢＣ全部なら10日で1周」「1周10日を超えるならＡＢを優先」。'+
+     '時間を決めると、そこから1周の日数を逆算します（1肢'+secPer().toFixed(0)+'秒の実測ペース、戻ってくる肢を35%と見込み）。'+
+     '教材の目安は「まずはＡのみ5日で1周」「1周10日を超えるならＡＢを優先」。'+
      '復習の最長間隔もこの日数に合わせるので、必ずこの周期で全部に戻ってきます。'+
      '1日の量は「今周の残り÷残り日数」で毎日計算し直します。分数は、外した肢の出し直し（およそ3割）を見込んだ目安です。</div>';
   h+='<div class="lbl" style="margin-top:18px">外した肢の扱い</div><div class="seg">'+
@@ -611,6 +666,15 @@ function vHome(){
      '<button data-rt="off" class="'+(S.rt==='off'?'on':'')+'">翌日まで出さない</button></div>';
   h+='<div class="note" style="margin-top:-10px">外した肢は翌日に回します。「その場でもう一度」なら、'+
      'セッションの最後に1回だけ出し直します（最大6肢）。この1回は日程にも記録にも影響しません。</div>';
+  var t0=today(), back=0;
+  for(var bk in S.L){ if(BYID[bk] && rankOk(BYID[bk]) && S.L[bk].due<t0) back++; }
+  if(back>Math.round(cap()*0.5)){
+    h+='<div class="alert"><b>期限ぎれの復習が'+back+'肢たまっています</b>'+
+       '一度に出すと今日が終わらないので、数日に分けて配れます。記録は消えません。'+
+       '<div class="mini"><button data-spread="3">3日に分ける</button>'+
+       '<button data-spread="5">5日に分ける</button>'+
+       '<button data-spread="7">7日に分ける</button></div></div>';
+  }
   var rz=resumable();
   if(rz){
     h+='<div class="lbl" style="margin-top:20px">途中のセッション</div>';
@@ -724,9 +788,10 @@ function vCard(){
     if(c.shs && c.shs.length){
       var si=Math.min(ses.shi||0, c.shs.length-1), art=c.shs[si], sh=SH[art];
       function artName(k){ return k.replace('|',''); }
+      var ci=citeOf(c, art), ci0=citeOf(c, c.shs[0]);
       var ref=sh.b?(sh.b+(sh.p?' p.'+sh.p:'')):'';
       h+='<button data-sh="1"><b>'+(ses.sh?'趣旨を閉じる':'趣旨を見る')+'</b> — '+
-        artName(c.shs[0])+(c.shs.length>1?' ほか':'')+'</button>';
+        c.shs[0].split('|')[0]+ci0.full+(c.shs.length>1?' ほか':'')+'</button>';
       if(ses.sh){
         var lv=S.lv==='t'?'t':'e';
         h+='<div class="caution">趣旨はその条文全体の考え方です。<b>この肢の正誤は上の理由で決まります。</b>'+
@@ -734,15 +799,20 @@ function vCard(){
         if(c.shs.length>1){
           h+='<div class="chips">';
           c.shs.forEach(function(a,i){
-            h+='<button data-shi="'+i+'" class="'+(i===si?'on':'')+'">'+artName(a)+
-               (i===0?'（この肢の根拠）':'')+'</button>'; });
+            h+='<button data-shi="'+i+'" class="'+(i===si?'on':'')+'">'+
+               a.split('|')[0]+citeOf(c,a).full+(i===0?'（この肢の根拠）':'')+'</button>'; });
           h+='</div>';
         }
         h+='<div class="seg" style="margin:10px 0 0">'+
            '<button data-lv="e" class="'+(lv==='e'?'on':'')+'">やさしく</button>'+
            '<button data-lv="t" class="'+(lv==='t'?'on':'')+'">くわしく</button></div>';
-        h+='<div class="body" style="margin-top:8px">'+esc(lv==='t'?sh.t:sh.e)+
-          '<span class="src">'+artName(art)+'　'+
+        var subs=sh.sub||{}, hit=[], seen2={};
+        subLabels(ci.subs).forEach(function(L){
+          if(subs[L] && !seen2[subs[L]] && hit.length<2){ seen2[subs[L]]=1; hit.push([L,subs[L]]); } });
+        hit.forEach(function(x){
+          h+='<div class="pin"><b>'+artName(art)+x[0]+'</b>'+esc(x[1])+'</div>'; });
+        h+='<div class="body" style="margin-top:8px">'+markSubs(esc(lv==='t'?sh.t:sh.e), ci.subs)+
+          '<span class="src">'+art.split('|')[0]+ci.full+'　'+
           (lv==='e'
             ? 'かみくだいた説明です。答案で使う言い回しは「くわしく」のほうを見てください。'
             : (ref?ref+'テキスト':'')+(sh.k==='T'?'の趣旨を要約':'。テキストに趣旨の明示がないため補足。答案の根拠には使わないこと'))+
@@ -949,14 +1019,15 @@ function render(){
 
 /* ---------- 操作 ---------- */
 document.addEventListener('click',function(e){
-  var el=e.target.closest('[data-go],[data-pick],[data-next],[data-sh],[data-shi],[data-ask],[data-guess],[data-rank],[data-mix],[data-lv],[data-rt],[data-cyc],[data-note],[data-topic],[data-reset],[data-io]');
+  var el=e.target.closest('[data-go],[data-pick],[data-next],[data-sh],[data-shi],[data-ask],[data-guess],[data-rank],[data-mix],[data-lv],[data-rt],[data-mins],[data-hot],[data-spread],[data-note],[data-topic],[data-reset],[data-io]');
   if(!el) return;
   var d=el.dataset;
   if(d.rank){ S.rank=d.rank; save(); return render(); }
   if(d.mix){ S.mix=d.mix; save(); return render(); }
   if(d.lv){ S.lv=d.lv; save(); return render(); }
   if(d.rt){ S.rt=d.rt; save(); return render(); }
-  if(d.cyc){ S.cyc=Number(d.cyc); save(); return render(); }
+  if(d.mins){ S.mins=Number(d.mins); save(); return render(); }
+  if(d.hot!==undefined){ S.hot=Number(d.hot); save(); return render(); }
   if(d.go){ if(d.go==='load'){ tmp.err=null; view='load'; return render(); }
             if(d.go==='resume'){ return resumeSession(); }
             if(d.go==='home'){ if(ses){ saveSes(); Store.set(KEY,JSON.stringify(S)); }
@@ -981,6 +1052,8 @@ document.addEventListener('click',function(e){
     }
     return;
   }
+  if(d.spread){ var r=spreadDue(Number(d.spread));
+    toast(r.n+'肢を'+d.spread+'日に分けました'); return render(); }
   if(d.note){
     var cn=ses.queue[ses.i];
     if(d.note==='edit'){ tmp.note=1; return render(); }
@@ -1025,7 +1098,7 @@ document.addEventListener('change',function(e){
     var d=null;
     try{ d=JSON.parse(r.result); }catch(err){}
     if(!d||!d.cards||!d.cards.length){
-      tmp.err='教材データとして読めませんでした。cards.json を選んでください。'; view='load'; return render(); }
+      tmp.err='教材データとして読めませんでした。law_cards.json を選んでください。'; view='load'; return render(); }
     initData(d); tmp.err=null;
     Store.set(DKEY, r.result);
     load().then(function(){ view='home'; render(); toast(CARDS.length+'肢を読み込みました'); });
